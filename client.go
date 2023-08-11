@@ -20,17 +20,21 @@ const (
 
 	// methodGet fetches a single D-Bus property by name.
 	methodGet = "org.freedesktop.DBus.Properties.Get"
+
+	// methodGet fetches all of an object's D-Bus properties.
+	methodGetAll = "org.freedesktop.DBus.Properties.GetAll"
 )
 
 // A Client can issue D-Bus requests to systemd-networkd.
 type Client struct {
-	Version string
+	Manager *ManagerService
 
 	// Functions which normally manipulate D-Bus but are also swappable for
 	// tests.
-	c    *dbus.Conn
-	call callFunc
-	get  getFunc
+	c      *dbus.Conn
+	call   callFunc
+	get    getFunc
+	getAll getAllFunc
 }
 
 // Dial dials a D-Bus connection to systemd-networkd and returns a Client. If
@@ -45,9 +49,10 @@ func Dial(ctx context.Context) (*Client, error) {
 	return initClient(ctx, &Client{
 		// Wrap the *dbus.Conn completely to abstract away all of the low-level
 		// D-Bus logic for ease of unit testing.
-		c:    conn,
-		call: makeCall(conn),
-		get:  makeGet(conn),
+		c:      conn,
+		call:   makeCall(conn),
+		get:    makeGet(conn),
+		getAll: makeAllGet(conn),
 	})
 }
 
@@ -61,7 +66,42 @@ func initClient(ctx context.Context, c *Client) (*Client, error) {
 		return nil, toNotExist(err)
 	}
 
+	c.Manager = &ManagerService{c: c}
 	return c, nil
+}
+
+// The ManagerService exposes methods and properties of the networkd Manager
+// object.
+type ManagerService struct {
+	c *Client
+}
+
+// ManagerProperties contains all of the D-Bus properties for the networkd
+// Manager object.
+type ManagerProperties struct {
+	OperationalState string
+	CarrierState     string
+	AddressState     string
+	IPv4AddressState string
+	IPv6AddressState string
+	OnlineState      string
+}
+
+// Properties fetches all D-Bus properties for the networkd Manager object.
+func (ms *ManagerService) Properties(ctx context.Context) (ManagerProperties, error) {
+	out, err := ms.c.getAll(ctx, objectPath(), interfacePath("Manager"))
+	if err != nil {
+		return ManagerProperties{}, err
+	}
+
+	return ManagerProperties{
+		OperationalState: out["OperationalState"].Value().(string),
+		CarrierState:     out["CarrierState"].Value().(string),
+		AddressState:     out["AddressState"].Value().(string),
+		IPv4AddressState: out["IPv4AddressState"].Value().(string),
+		IPv6AddressState: out["IPv6AddressState"].Value().(string),
+		OnlineState:      out["OnlineState"].Value().(string),
+	}, nil
 }
 
 // A Link is a network link known to systemd-networkd.
@@ -72,9 +112,9 @@ type Link struct {
 }
 
 // ListLinks lists all of the network links known to systemd-networkd.
-func (c *Client) ListLinks(ctx context.Context) ([]Link, error) {
+func (ms *ManagerService) ListLinks(ctx context.Context) ([]Link, error) {
 	var m dbus.Variant
-	if err := c.call(ctx, baseService, interfacePath("Manager.ListLinks"), objectPath(), &m); err != nil {
+	if err := ms.c.call(ctx, interfacePath(), interfacePath("Manager.ListLinks"), objectPath(), &m); err != nil {
 		return nil, err
 	}
 
@@ -138,6 +178,9 @@ type callFunc func(ctx context.Context, service, method string, op dbus.ObjectPa
 // A getFunc is a function which fetches a D-Bus property from an object.
 type getFunc func(ctx context.Context, op dbus.ObjectPath, iface, prop string) (dbus.Variant, error)
 
+// A getAllFunc is a function which fetches all D-Bus properties for an object.
+type getAllFunc func(ctx context.Context, op dbus.ObjectPath, iface string) (map[string]dbus.Variant, error)
+
 // makeCall produces a callFunc which calls a D-Bus method on an object.
 func makeCall(c *dbus.Conn) callFunc {
 	return func(ctx context.Context, service, method string, op dbus.ObjectPath, out any, args ...any) error {
@@ -164,6 +207,21 @@ func makeGet(c *dbus.Conn) getFunc {
 		var out dbus.Variant
 		if err := call(ctx, baseService, methodGet, op, &out, iface, prop); err != nil {
 			return dbus.Variant{}, fmt.Errorf("get property %q for %q: %w", prop, iface, err)
+		}
+
+		return out, nil
+	}
+}
+
+// makeGetAll produces a getAllFunc which can fetch all of an object's
+// properties from a D-Bus interface.
+func makeAllGet(c *dbus.Conn) getAllFunc {
+	// Adapt a getAllFunc using the more generic callFunc.
+	call := makeCall(c)
+	return func(ctx context.Context, op dbus.ObjectPath, iface string) (map[string]dbus.Variant, error) {
+		var out map[string]dbus.Variant
+		if err := call(ctx, baseService, methodGetAll, op, &out, iface); err != nil {
+			return nil, fmt.Errorf("get all properties for %q: %w", iface, err)
 		}
 
 		return out, nil

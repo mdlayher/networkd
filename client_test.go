@@ -24,12 +24,19 @@ func TestIntegration(t *testing.T) {
 	}
 	defer c.Close()
 
-	links, err := c.ListLinks(ctx)
+	props, err := c.Manager.Properties(ctx)
+	if err != nil {
+		t.Fatalf("failed to get properties: %v", err)
+	}
+
+	t.Logf("properties: %+v", props)
+
+	links, err := c.Manager.ListLinks(ctx)
 	if err != nil {
 		t.Fatalf("failed to list links: %v", err)
 	}
 
 	for _, l := range links {
-		t.Logf("link: %+v", l)
+		t.Logf("  - link: %+v", l)
 	}
 }
