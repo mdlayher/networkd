@@ -23,4 +23,13 @@ func TestIntegration(t *testing.T) {
 		t.Fatalf("failed to dial: %v", err)
 	}
 	defer c.Close()
+
+	links, err := c.ListLinks(ctx)
+	if err != nil {
+		t.Fatalf("failed to list links: %v", err)
+	}
+
+	for _, l := range links {
+		t.Logf("link: %+v", l)
+	}
 }

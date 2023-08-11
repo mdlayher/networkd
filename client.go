@@ -28,9 +28,9 @@ type Client struct {
 
 	// Functions which normally manipulate D-Bus but are also swappable for
 	// tests.
-	c        *dbus.Conn
-	networkd dbus.BusObject
-	get      getFunc
+	c    *dbus.Conn
+	call callFunc
+	get  getFunc
 }
 
 // Dial dials a D-Bus connection to systemd-networkd and returns a Client. If
@@ -45,9 +45,9 @@ func Dial(ctx context.Context) (*Client, error) {
 	return initClient(ctx, &Client{
 		// Wrap the *dbus.Conn completely to abstract away all of the low-level
 		// D-Bus logic for ease of unit testing.
-		c:        conn,
-		networkd: conn.Object(interfacePath(), objectPath()),
-		get:      makeGet(conn),
+		c:    conn,
+		call: makeCall(conn),
+		get:  makeGet(conn),
 	})
 }
 
@@ -62,6 +62,40 @@ func initClient(ctx context.Context, c *Client) (*Client, error) {
 	}
 
 	return c, nil
+}
+
+// A Link is a network link known to systemd-networkd.
+type Link struct {
+	Index      int
+	Name       string
+	ObjectPath dbus.ObjectPath
+}
+
+// ListLinks lists all of the network links known to systemd-networkd.
+func (c *Client) ListLinks(ctx context.Context) ([]Link, error) {
+	var m dbus.Variant
+	if err := c.call(ctx, baseService, interfacePath("Manager.ListLinks"), objectPath(), &m); err != nil {
+		return nil, err
+	}
+
+	var (
+		values = m.Value().([][]any)
+		links  = make([]Link, 0, len(values))
+	)
+
+	for _, vs := range values {
+		if l := len(vs); l != 3 {
+			return nil, fmt.Errorf("invalid number of link values: %d", l)
+		}
+
+		links = append(links, Link{
+			Index:      int(vs[0].(int32)),
+			Name:       vs[1].(string),
+			ObjectPath: vs[2].(dbus.ObjectPath),
+		})
+	}
+
+	return links, nil
 }
 
 // objectPath prepends its arguments with the base object path for networkd.
