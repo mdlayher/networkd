@@ -114,7 +114,13 @@ type Link struct {
 // ListLinks lists all of the network links known to systemd-networkd.
 func (ms *ManagerService) ListLinks(ctx context.Context) ([]Link, error) {
 	var m dbus.Variant
-	if err := ms.c.call(ctx, interfacePath(), interfacePath("Manager.ListLinks"), objectPath(), &m); err != nil {
+	err := ms.c.call(ctx, dbusCall{
+		Service: interfacePath(),
+		Object:  objectPath(),
+		Method:  interfacePath("Manager.ListLinks"),
+		Out:     &m,
+	})
+	if err != nil {
 		return nil, err
 	}
 
@@ -171,9 +177,17 @@ func toNotExist(err error) error {
 	return fmt.Errorf("%v: %w", err, os.ErrNotExist)
 }
 
+type dbusCall struct {
+	Service string
+	Object  dbus.ObjectPath
+	Method  string
+	Out     any
+	Args    []any
+}
+
 // A callFunc is a function which calls a D-Bus method on an object and
 // optionally stores its output in the pointer provided to out.
-type callFunc func(ctx context.Context, service, method string, op dbus.ObjectPath, out any, args ...any) error
+type callFunc func(ctx context.Context, call dbusCall) error
 
 // A getFunc is a function which fetches a D-Bus property from an object.
 type getFunc func(ctx context.Context, op dbus.ObjectPath, iface, prop string) (dbus.Variant, error)
@@ -183,18 +197,18 @@ type getAllFunc func(ctx context.Context, op dbus.ObjectPath, iface string) (map
 
 // makeCall produces a callFunc which calls a D-Bus method on an object.
 func makeCall(c *dbus.Conn) callFunc {
-	return func(ctx context.Context, service, method string, op dbus.ObjectPath, out any, args ...any) error {
-		call := c.Object(service, op).CallWithContext(ctx, method, 0, args...)
-		if call.Err != nil {
-			return fmt.Errorf("call %q: %w", method, call.Err)
+	return func(ctx context.Context, call dbusCall) error {
+		dCall := c.Object(call.Service, call.Object).CallWithContext(ctx, call.Method, 0, call.Args...)
+		if dCall.Err != nil {
+			return fmt.Errorf("call %q: %w", call.Method, dCall.Err)
 		}
 
 		// Store the results of the call only when out is not nil.
-		if out == nil {
+		if call.Out == nil {
 			return nil
 		}
 
-		return call.Store(out)
+		return dCall.Store(call.Out)
 	}
 }
 
@@ -205,7 +219,14 @@ func makeGet(c *dbus.Conn) getFunc {
 	call := makeCall(c)
 	return func(ctx context.Context, op dbus.ObjectPath, iface, prop string) (dbus.Variant, error) {
 		var out dbus.Variant
-		if err := call(ctx, baseService, methodGet, op, &out, iface, prop); err != nil {
+		err := call(ctx, dbusCall{
+			Service: baseService,
+			Object:  op,
+			Method:  methodGet,
+			Out:     &out,
+			Args:    []any{iface, prop},
+		})
+		if err != nil {
 			return dbus.Variant{}, fmt.Errorf("get property %q for %q: %w", prop, iface, err)
 		}
 
@@ -220,7 +241,14 @@ func makeAllGet(c *dbus.Conn) getAllFunc {
 	call := makeCall(c)
 	return func(ctx context.Context, op dbus.ObjectPath, iface string) (map[string]dbus.Variant, error) {
 		var out map[string]dbus.Variant
-		if err := call(ctx, baseService, methodGetAll, op, &out, iface); err != nil {
+		err := call(ctx, dbusCall{
+			Service: baseService,
+			Object:  op,
+			Method:  methodGetAll,
+			Out:     &out,
+			Args:    []any{iface},
+		})
+		if err != nil {
 			return nil, fmt.Errorf("get all properties for %q: %w", iface, err)
 		}
 
